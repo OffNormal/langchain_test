@@ -74,9 +74,22 @@ export function createSpeechRecognizer(handler: ASREventHandler) {
   return {
     start() {
       if (state === 'listening') return;
-      setState('listening');
-      recognition.start();
-      // 5 秒兜底超时：防止浏览器不触发 onend
+      try {
+        setState('listening');
+        recognition.start();
+      } catch (e) {
+        // 浏览器状态不一致时，abort 后重试
+        if (e instanceof DOMException && e.name === 'InvalidStateError') {
+          recognition.abort();
+          setTimeout(() => {
+            setState('listening');
+            recognition.start();
+          }, 100);
+        } else {
+          setState('error');
+        }
+      }
+      // 5 秒兜底超时
       autoStopTimer = setTimeout(() => {
         if (state === 'listening') {
           recognition.stop();
@@ -86,7 +99,11 @@ export function createSpeechRecognizer(handler: ASREventHandler) {
     },
     stop() {
       if (autoStopTimer) { clearTimeout(autoStopTimer); autoStopTimer = null; }
-      recognition.stop();
+      try {
+        recognition.stop();
+      } catch {
+        recognition.abort();
+      }
       setState('idle');
     },
     getState: () => state,

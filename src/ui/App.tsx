@@ -72,8 +72,6 @@ export default function App() {
           if (s === 'listening') {
             setFeedback('listening');
             setMessage('正在听...（再按空格结束）');
-          } else {
-            listeningRef.current = false;
           }
         },
         onError: (e) => {
@@ -99,22 +97,17 @@ export default function App() {
     }
   }, []);
 
-  // 监听状态 ref（避免闭包陈旧问题）
-  const listeningRef = useRef(false);
-
   // 开始/停止语音识别（空格键切换）
   const toggleListening = useCallback(() => {
     if (!micReady) return;
     const rec = ensureRecognizer();
 
-    if (listeningRef.current) {
+    if (rec.getState() === 'listening') {
       rec.stop();
-      listeningRef.current = false;
       setFeedback('idle');
       setMessage('已停止 — 按空格键重新开始');
     } else {
       rec.start();
-      listeningRef.current = true;
     }
   }, [micReady, ensureRecognizer]);
 
