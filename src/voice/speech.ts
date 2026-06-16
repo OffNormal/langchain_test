@@ -38,12 +38,13 @@ export function createSpeechRecognizer(handler: ASREventHandler) {
   let state: ASRState = 'idle';
   let autoStopTimer: ReturnType<typeof setTimeout> | null = null;
 
+  const clearTimer = () => {
+    if (autoStopTimer) { clearTimeout(autoStopTimer); autoStopTimer = null; }
+  };
+
   const setState = (s: ASRState) => {
     state = s;
-    if (s !== 'listening' && autoStopTimer) {
-      clearTimeout(autoStopTimer);
-      autoStopTimer = null;
-    }
+    if (s !== 'listening') clearTimer();
     handler.onStateChange?.(s);
   };
 
@@ -61,8 +62,13 @@ export function createSpeechRecognizer(handler: ASREventHandler) {
   };
 
   recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-    setState('error');
-    handler.onError?.(event.error);
+    // "no-speech" 和 "aborted" 是正常情况，不当作错误
+    if (event.error === 'no-speech' || event.error === 'aborted') {
+      setState('idle');
+    } else {
+      setState('error');
+      handler.onError?.(event.error);
+    }
   };
 
   recognition.onend = () => {
@@ -73,39 +79,41 @@ export function createSpeechRecognizer(handler: ASREventHandler) {
 
   return {
     start() {
-      if (state === 'listening') return;
+      clearTimer();
+      // 强制 abort 重置浏览器内部状态
+      try { recognition.abort(); } catch { /* ignore */ }
+      setState('listening');
       try {
-        setState('listening');
         recognition.start();
-      } catch (e) {
-        // 浏览器状态不一致时，abort 后重试
-        if (e instanceof DOMException && e.name === 'InvalidStateError') {
-          recognition.abort();
-          setTimeout(() => {
+      } catch {
+        // 如果仍然失败，说明浏览器还没准备好，延迟重试
+        setTimeout(() => {
+          try { recognition.abort(); } catch { /* ignore */ }
+          try {
             setState('listening');
             recognition.start();
-          }, 100);
-        } else {
-          setState('error');
-        }
+          } catch {
+            setState('error');
+            handler.onError?.('语音识别启动失败');
+          }
+        }, 150);
+        return;
       }
       // 5 秒兜底超时
       autoStopTimer = setTimeout(() => {
         if (state === 'listening') {
-          recognition.stop();
+          try { recognition.abort(); } catch { /* ignore */ }
           setState('idle');
         }
       }, 5000);
     },
+
     stop() {
-      if (autoStopTimer) { clearTimeout(autoStopTimer); autoStopTimer = null; }
-      try {
-        recognition.stop();
-      } catch {
-        recognition.abort();
-      }
+      clearTimer();
+      try { recognition.abort(); } catch { /* ignore */ }
       setState('idle');
     },
+
     getState: () => state,
   };
 }
