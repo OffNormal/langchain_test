@@ -230,26 +230,27 @@ export default function App() {
         )}
       </div>
 
-      {/* 画布 */}
-      <canvas
-        ref={canvasRef}
-        style={{ flex: 1, width: '100%', border: '1px solid #E5E7EB' }}
-      />
-
-      {/* 错误日志区 */}
+      {/* 错误日志区 — 放在画布上方，避免被 flex:1 挤到页面底部 */}
       {errors.length > 0 && (
         <div style={{
           padding: '6px 24px',
           background: '#FEF2F2',
           borderTop: '1px solid #FECACA',
+          borderBottom: '1px solid #FECACA',
           fontSize: 12,
           color: '#991B1B',
-          maxHeight: 80,
+          maxHeight: 72,
           overflowY: 'auto',
         }}>
           {errors.map((e, i) => <div key={i}>{e}</div>)}
         </div>
       )}
+
+      {/* 画布 */}
+      <canvas
+        ref={canvasRef}
+        style={{ flex: 1, width: '100%', border: '1px solid #E5E7EB' }}
+      />
 
       {/* 底部操作栏 */}
       <div style={{ padding: '12px 24px', textAlign: 'center' }}>
