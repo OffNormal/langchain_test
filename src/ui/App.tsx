@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, Component } from 'react';
+import type { ReactNode } from 'react';
 import { initEngine, execute } from '@/engine';
 import type { EngineContext } from '@/engine';
 import { createIflytekRecognizer } from '@/voice';
@@ -9,7 +10,25 @@ import { parseToCommand } from '@/parser';
 type FeedbackState = 'idle' | 'listening' | 'processing' | 'done' | 'error';
 type PipelineStep = 'idle' | 'asr' | 'nlu' | 'parser' | 'engine' | 'error';
 
-export default function App() {
+/** 捕获渲染期异常，防止整个页面白屏 */
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 40, color: '#991B1B', fontFamily: 'monospace' }}>
+          <h2>渲染错误</h2>
+          <pre>{this.state.error.message}</pre>
+          <pre style={{ fontSize: 12, color: '#6B7280' }}>{this.state.error.stack}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<EngineContext | null>(null);
   const [transcript, setTranscript] = useState('');
@@ -276,5 +295,13 @@ export default function App() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function AppWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   );
 }
