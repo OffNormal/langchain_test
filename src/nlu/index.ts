@@ -19,17 +19,29 @@ const LOW_CONFIDENCE_THRESHOLD = 0.6;
  * 3. LLM 失败 → 抛出错误，由调用方提示用户
  */
 export async function parse(transcript: string): Promise<NLUResult> {
+  const trimmed = transcript.trim();
+  // 调试：输出原始文本的 charCode 以发现不可见字符
+  console.log('[nlu:parse]', {
+    raw: transcript,
+    trimmed,
+    charCodes: [...trimmed].map((c) => `${c}(U+${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')})`),
+  });
+
   // 第1级: 规则引擎
-  const ruleMatch = matchRules(transcript);
+  const ruleMatch = matchRules(trimmed);
   if (ruleMatch) {
+    console.log('[nlu:rule] matched:', ruleMatch.ruleName);
     return ruleMatch.result;
   }
+  console.log('[nlu:rule] no match, falling back to LLM');
 
   // 第2级: LLM 兜底
   try {
-    const result = await parseWithLLMRetry(transcript);
+    const result = await parseWithLLMRetry(trimmed);
+    console.log('[nlu:llm] result:', result);
     return result;
-  } catch {
+  } catch (e) {
+    console.error('[nlu:llm] failed:', e);
     // 降级失败 — 返回低置信度结果，由调用方提示重述
     return {
       intent: 'QUERY',
