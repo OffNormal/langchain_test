@@ -107,6 +107,8 @@ export default function App() {
       setFeedback('idle');
       setMessage('已停止 — 按空格键重新开始');
     } else {
+      setTranscript('');
+      setInterim('');
       rec.start();
     }
   }, [micReady, ensureRecognizer]);
@@ -145,7 +147,27 @@ export default function App() {
             : '#9CA3AF',
         }} />
         <span>{message}</span>
-        {interim && <span style={{ color: '#6B7280', fontStyle: 'italic' }}>{interim}</span>}
+      </div>
+
+      {/* 识别文本回显 */}
+      <div style={{
+        padding: '8px 24px',
+        background: '#FAFAFA',
+        borderBottom: '1px solid #E5E7EB',
+        minHeight: 28,
+        fontSize: 15,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+      }}>
+        <span style={{ color: '#9CA3AF', fontSize: 12 }}>识别:</span>
+        {interim ? (
+          <span style={{ color: '#6B7280', fontStyle: 'italic' }}>{interim}...</span>
+        ) : transcript ? (
+          <span style={{ color: '#1F2937' }}>"{transcript}"</span>
+        ) : (
+          <span style={{ color: '#D1D5DB' }}>等待语音输入...</span>
+        )}
       </div>
 
       {/* 画布 */}
