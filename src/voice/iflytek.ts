@@ -29,6 +29,7 @@ interface IflytekResponse {
       ed: number;
       ws: Array<{
         bg: number;
+        ed: number;
         cw: Array<{ w: string; wp: string; sc: number }>;
       }>;
     };
@@ -89,14 +90,27 @@ export function createIflytekRecognizer(handler: ASREventHandler) {
     const result = json.data?.result;
     if (!result?.ws) return;
 
-    // 拼接当前句子的所有词
-    const words: string[] = [];
-    for (const seg of result.ws) {
-      for (const cw of seg.cw) {
-        words.push(cw.w);
+    // wpgs 模式下 ws 条目可能有重叠（如 "帮" + "帮我" + "我"），
+    // 按 bg 排序后，只保留非重叠的最短片段（取每个位置最精细的词）
+    const segments = result.ws
+      .filter((seg) => seg.cw.length > 0)
+      .sort((a, b) => a.bg - b.bg);
+
+    const deduped: typeof segments = [];
+    for (const seg of segments) {
+      const last = deduped[deduped.length - 1];
+      if (last && seg.bg < last.ed) {
+        // 与前一词重叠：保留 span 更短的（更精细的词）
+        if (seg.ed - seg.bg < last.ed - last.bg) {
+          deduped[deduped.length - 1] = seg;
+        }
+        // 否则丢弃当前词（保留已有的更短/相同的词）
+      } else {
+        deduped.push(seg);
       }
     }
 
+    const words = deduped.map((seg) => seg.cw[0].w);
     const sentence = words.join('');
     sentenceBuffer[result.sn] = sentence;
     const fullText = sentenceBuffer.filter(Boolean).join('');
