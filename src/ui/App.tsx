@@ -67,6 +67,14 @@ function App() {
       return;
     }
 
+    // 防御: 纯标点/空白文本不进入 NLU，防止讯飞独立标点帧污染管道
+    if (!/[^\s。！？.!?，,、；;：:…]/.test(text)) {
+      console.warn('[ui] ignoring punctuation-only transcript:', text);
+      setMessage('没有识别到内容，请再说一次');
+      setFeedback('idle');
+      return;
+    }
+
     setTranscript(text);
     setFeedback('processing');
     setStep('nlu');

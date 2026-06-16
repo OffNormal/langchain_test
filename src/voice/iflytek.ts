@@ -110,6 +110,18 @@ export function createIflytekRecognizer(handler: ASREventHandler) {
     const text = wsToText(result.ws);
     if (!text) return;
 
+    // 忽略纯标点/空白帧 — 讯飞可能将句尾标点（。！？）作为独立最终帧返回，
+    // 若不加过滤会覆盖掉前序正确的 interimTranscript
+    if (!/[^\s。！？.!?，,、；;：:…]/.test(text)) {
+      console.log('[iflytek:skip] punctuation-only frame, ignored:', text);
+      // 若这是最终帧但却没有内容，回退到已经收到的 interimTranscript
+      if (result.ls && interimTranscript && !finalTranscript) {
+        finalTranscript = interimTranscript;
+        console.log('[iflytek:final] fallback to interim:', finalTranscript);
+      }
+      return;
+    }
+
     interimTranscript = text;
     gotFirstResult = true;
 
