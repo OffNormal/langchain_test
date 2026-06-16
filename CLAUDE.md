@@ -11,7 +11,7 @@
 | 前端 | React 18 + TypeScript | — |
 | 画布 | Fabric.js 6.x | — |
 | LLM 调用 | LangChain (Prompt + OutputParser) | — |
-| 流程编排 | — | LangGraph (StateGraph + Router) |
+| 流程编排 | LangGraph (StateGraph + Router) | 复合指令编排 (LangGraph 子图) |
 | ASR | 讯飞流式 (WebSocket IAT) | — |
 | NLU LLM | DeepSeek-V4 (`langchain_deepseek`) | 通义千问 / 智谱 GLM 备选 |
 | 部署 | Vercel (Web) | Tauri (Desktop) |
@@ -19,15 +19,16 @@
 ## 架构
 
 ```
-语音输入 → 讯飞 IAT WebSocket → 规则引擎(匹配?→直接返回) → LangChain LLM → Command Parser → Fabric.js Canvas
+语音输入 → 讯飞 IAT WebSocket → 规则引擎(匹配?→直接返回) → LangGraph StateGraph → Command Parser → Fabric.js Canvas
+                                  (前端本地 <5ms)              (Python API: 分类→路由→slot 提取)
 ```
 
-MVP 阶段 LangChain 直链，不做复杂状态机。V1.0+ 引入 LangGraph 管理意图路由和复合指令。
+V1.0 引入 LangGraph 管理意图路由，每个意图有专属处理节点和 prompt。后续可在此基础上扩展复合指令编排（LangGraph 子图）。
 
 ### 关键设计决策
 
 1. **规则引擎优先**：高频简单指令（"画圆""撤销"）走规则匹配 <5ms，跳过 LLM
-2. **LangGraph 暂缓**：MVP 只需线性链路，LangGraph 的状态图增加复杂度但不增加价值
+2. **LangGraph 意图路由**：规则未命中 → Python LangGraph StateGraph。分类器先判定意图，再路由到专属 handler 做 slot 提取。每个意图有独立 prompt，准确度高于单一大 prompt
 3. **容错靠撤销**：语音识别不可能 100% 准确，核心策略是"快速执行 + 即时撤销"，而非过度防御
 4. **Fabric.js 非自研 Canvas**：成熟对象模型和序列化能力，开发效率远高于裸 Canvas API
 
@@ -145,32 +146,50 @@ npm run lint                  # ESLint
 npm run test                  # Vitest 单元测试
 ```
 
-## LangChain 调用模式
+## LangGraph 调用模式
 
-LangChain 运行在 **前端同仓库的 Python 轻量 API 服务** 中（`api/` 目录），前端通过 HTTP POST 调用。这样 LangChain Python 生态可直接使用，且与前端解耦。
+LangGraph 运行在 **前端同仓库的 Python 轻量 API 服务** 中（`api/` 目录），前端通过 HTTP POST 调用。
 
 ```
-浏览器 → POST /api/nlu { text } → Python FastAPI → LangChain → DeepSeek → NLUResult
+浏览器 → POST /api/nlu { text } → Python FastAPI → LangGraph StateGraph → DeepSeek → NLUResult
+                                       │
+                    ┌──────────────────┼──────────────────────┐
+                    ▼                  ▼                      ▼
+              classify_intent    create_shape_handler    modify_object_handler  ...
+              (LLM call 1)       (LLM call 2, 按意图路由)
 ```
 
 ```python
-# api/nlu.py — FastAPI endpoint
+# api/nlu.py — LangGraph StateGraph
+from langgraph.graph import StateGraph, START, END
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_deepseek import ChatDeepSeek
 
-llm = ChatDeepSeek(model="deepseek-chat", temperature=0.1)
-chain = ChatPromptTemplate.from_messages([
-    ("system", "你是绘图指令解析器，将用户语音解析为结构化指令。"),
-    ("user", "{user_input}")
-]) | llm | JsonOutputParser(pydantic_object=DrawingCommand)
+# State
+class NLUState(BaseModel):
+    user_input: str
+    intent: str = "QUERY"
+    confidence: float = 0.0
+    slots: dict = {}
+
+# Graph: 分类 → 路由 → 意图 handler → END
+builder = StateGraph(NLUState)
+builder.add_node("classify_intent", classify_intent)
+builder.add_node("create_shape_handler", create_shape_handler)
+# ... 6 个 handler 节点
+builder.add_edge(START, "classify_intent")
+builder.add_conditional_edges("classify_intent", route_by_intent, {...})
+graph = builder.compile()
 
 @app.post("/api/nlu")
-async def nlu(req: NLURequest):
-    return chain.invoke({"user_input": req.text})
+async def nlu(req: NLURequest) -> NLUResult:
+    state = await graph.ainvoke({"user_input": req.text})
+    return NLUResult(intent=state["intent"], confidence=state["confidence"], slots=state["slots"])
 ```
 
-降级链：规则引擎（前端本地 <5ms）→ LLM API → 重试 1 次 → 友好提示。
+降级链：规则引擎（前端本地 <5ms）→ LangGraph LLM → 节点异常兜底（分类失败→QUERY confidence=0）
+
+详细设计见 `specs/PLAN_LANGGRAPH.md`。
 
 ### 所需环境变量
 
@@ -386,6 +405,7 @@ scope 必须对应代码模块划分约定的模块之一：
 | `specs/ARCHITECTURE.md` | 架构设计：架构图、数据流、组件职责、设计决策、风险矩阵 |
 | `specs/SPEC.md` | 技术规范：技术栈表、LangChain 集成、DrawingState、性能目标、容错、颜色/形状/术语参考表 |
 | `specs/API.md` | 接口契约：ASR 接口、NLUResult/DrawCommand Schema、指令 JSON 示例、语音指令表(含版本标记)、Canvas 操作 |
+| `specs/PLAN_LANGGRAPH.md` | V1.0 计划：LangGraph StateGraph 迁移方案（2 次 LLM 调用、7 节点、6 handler prompt） |
 | `CLAUDE.md` | 本文件：项目全局指南 |
 
 修改任何事实时，请确保只更新权威来源文件。颜色/形状/术语 → SPEC；接口 Schema → API；架构决策 → ARCHITECTURE；产品需求 → PRD_01。
