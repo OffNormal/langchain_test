@@ -29,7 +29,9 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 }
 
 function App() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Fabric.js 会修改 canvas 的 DOM 结构，不能放在 React 渲染树中
+  // 使用容器 div，canvas 手动创建以避免 React reconciliation 冲突
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
   const ctxRef = useRef<EngineContext | null>(null);
   const [transcript, setTranscript] = useState('');
   const [interim, setInterim] = useState('');
@@ -44,10 +46,15 @@ function App() {
     setErrors((prev) => [...prev.slice(-4), `${new Date().toLocaleTimeString()} ${msg}`]);
   }, []);
 
-  // 初始化 Engine
+  // 初始化 Engine — canvas 手动创建，脱离 React 管控
   useEffect(() => {
-    if (canvasRef.current && !ctxRef.current) {
-      ctxRef.current = initEngine(canvasRef.current);
+    if (canvasContainerRef.current && !ctxRef.current) {
+      const canvasEl = document.createElement('canvas');
+      canvasEl.style.width = '100%';
+      canvasEl.style.height = '100%';
+      canvasEl.style.display = 'block';
+      canvasContainerRef.current.appendChild(canvasEl);
+      ctxRef.current = initEngine(canvasEl);
     }
   }, []);
 
@@ -265,10 +272,10 @@ function App() {
         </div>
       )}
 
-      {/* 画布 */}
-      <canvas
-        ref={canvasRef}
-        style={{ flex: 1, width: '100%', border: '1px solid #E5E7EB' }}
+      {/* 画布 — 由 Fabric.js 通过 ref 手动管理，不放入 React 渲染树 */}
+      <div
+        ref={canvasContainerRef}
+        style={{ flex: 1, width: '100%', border: '1px solid #E5E7EB', overflow: 'hidden' }}
       />
 
       {/* 底部操作栏 */}
