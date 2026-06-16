@@ -31,21 +31,30 @@ export default function App() {
     setMessage(`听到了: "${asr.transcript}"`);
 
     try {
+      console.log('[ASR]', asr.transcript);
+
       const nlu = await parse(asr.transcript);
+      console.log('[NLU]', JSON.stringify(nlu));
+
       if (isLowConfidence(nlu)) {
-        setMessage('没理解，请换种说法');
+        setMessage(`没理解 "${asr.transcript}"，请换种说法`);
         setFeedback('error');
         return;
       }
 
       const cmd = parseToCommand(nlu);
+      console.log('[CMD]', JSON.stringify(cmd));
 
       if (ctxRef.current) {
         execute(ctxRef.current, cmd);
         setMessage(`完成: ${cmd.action} → ${cmd.target}`);
         setFeedback('done');
+      } else {
+        setMessage('画布未就绪');
+        setFeedback('error');
       }
-    } catch {
+    } catch (e) {
+      console.error('[ERR]', e);
       setMessage('处理出错了，请重试');
       setFeedback('error');
     }
