@@ -7,6 +7,7 @@ import { parse, isLowConfidence } from '@/nlu';
 import { parseToCommand } from '@/parser';
 
 type FeedbackState = 'idle' | 'listening' | 'processing' | 'done' | 'error';
+type PipelineStep = 'idle' | 'asr' | 'nlu' | 'parser' | 'engine' | 'error';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -16,6 +17,13 @@ export default function App() {
   const [feedback, setFeedback] = useState<FeedbackState>('idle');
   const [message, setMessage] = useState('点击下方按钮授权麦克风');
   const [micReady, setMicReady] = useState(false);
+  const [step, setStep] = useState<PipelineStep>('idle');
+  const [errors, setErrors] = useState<string[]>([]);
+
+  const addError = useCallback((msg: string) => {
+    console.error('[语音绘图]', msg);
+    setErrors((prev) => [...prev.slice(-4), `${new Date().toLocaleTimeString()} ${msg}`]);
+  }, []);
 
   // 初始化 Engine
   useEffect(() => {
@@ -26,78 +34,118 @@ export default function App() {
 
   // 处理语音识别结果
   const handleResult = useCallback(async (asr: ASRResult) => {
-    setTranscript(asr.transcript);
+    const text = asr.transcript.trim();
+    if (!text) {
+      setMessage('没有识别到内容，请再说一次');
+      setFeedback('idle');
+      return;
+    }
+
+    setTranscript(text);
     setFeedback('processing');
-    setMessage(`听到了: "${asr.transcript}"`);
+    setStep('nlu');
+    setMessage(`NLU 解析中: "${text}"`);
 
     try {
-      console.log('[ASR]', asr.transcript);
+      // ── Step 1: NLU ──
+      const nlu = await parse(text);
 
-      const nlu = await parse(asr.transcript);
-      console.log('[NLU]', JSON.stringify(nlu));
+      if (nlu.confidence === 0) {
+        setStep('error');
+        setFeedback('error');
+        addError(`NLU 失败: "${text}" → 规则未匹配且 LLM 不可用，请确保 Python API 已启动`);
+        setMessage('无法理解，请换种说法。提示: 试试 "画一个红色的圆"');
+        return;
+      }
 
       if (isLowConfidence(nlu)) {
-        setMessage(`没理解 "${asr.transcript}"，请换种说法`);
+        setStep('error');
+        setFeedback('error');
+        setMessage(`没理解 "${text}"，请换种说法 (置信度: ${nlu.confidence.toFixed(2)})`);
+        return;
+      }
+
+      // ── Step 2: Parser ──
+      setStep('parser');
+      const cmd = parseToCommand(nlu);
+
+      // ── Step 3: Engine ──
+      setStep('engine');
+      if (!ctxRef.current) {
+        addError('画布未初始化');
+        setMessage('画布未就绪，请刷新页面');
         setFeedback('error');
         return;
       }
 
-      const cmd = parseToCommand(nlu);
-      console.log('[CMD]', JSON.stringify(cmd));
+      execute(ctxRef.current, cmd);
+      setStep('idle');
+      setMessage(`完成: ${cmd.action} → ${cmd.target}`);
+      setFeedback('done');
 
-      if (ctxRef.current) {
-        execute(ctxRef.current, cmd);
-        setMessage(`完成: ${cmd.action} → ${cmd.target}`);
-        setFeedback('done');
-      } else {
-        setMessage('画布未就绪');
-        setFeedback('error');
-      }
     } catch (e) {
-      console.error('[ERR]', e);
-      setMessage('处理出错了，请重试');
+      const errMsg = e instanceof Error ? e.message : String(e);
+      addError(`管道异常 @${step}: ${errMsg}`);
+      setStep('error');
       setFeedback('error');
+      setMessage(`处理出错: ${errMsg}`);
     }
-  }, []);
+  }, [step, addError]);
 
-  // 语音识别器（懒创建：权限就绪后才初始化）
+  // 语音识别器
   const recognizerRef = useRef<ReturnType<typeof createSpeechRecognizer> | null>(null);
 
   const ensureRecognizer = useCallback(() => {
     if (!recognizerRef.current) {
       recognizerRef.current = createSpeechRecognizer({
         onResult: (r) => { handleResult(r); },
-        onInterim: (t) => { setInterim(t); },
+        onInterim: (t) => { setInterim(t); setStep('asr'); },
         onStateChange: (s) => {
           if (s === 'listening') {
             setFeedback('listening');
+            setStep('asr');
             setMessage('正在听...（再按空格结束）');
+          } else if (s === 'error') {
+            setStep('error');
+            setFeedback('error');
           }
         },
         onError: (e) => {
-          setMessage(`语音识别错误: ${e}`);
+          addError(`语音识别: ${e}`);
+          if (e === 'not-allowed') {
+            setMessage('麦克风权限不足，请刷新后重新授权');
+          } else if (e === 'no-speech') {
+            setMessage('没有检测到语音，请再说一次');
+          } else if (e === 'audio-capture') {
+            setMessage('找不到麦克风设备');
+          } else if (e === 'network') {
+            setMessage('语音识别需要联网');
+          } else {
+            setMessage(`语音识别错误: ${e}`);
+          }
           setFeedback('error');
         },
       });
     }
     return recognizerRef.current;
-  }, [handleResult]);
+  }, [handleResult, addError]);
 
-  // 请求麦克风权限（必须由用户点击触发）
+  // 请求麦克风权限
   const requestMic = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // 权限已获取，立即释放流（SpeechRecognition 自己会用麦克风）
       stream.getTracks().forEach((t) => t.stop());
       setMicReady(true);
       setMessage('麦克风就绪 — 按空格键开始说话');
-    } catch {
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      addError(`麦克风权限: ${err}`);
       setMessage('麦克风权限被拒绝，请在浏览器设置中允许');
       setFeedback('error');
     }
-  }, []);
+  }, [addError]);
 
-  // 开始/停止语音识别（空格键切换）
+  // 空格键切换
   const toggleListening = useCallback(() => {
     if (!micReady) return;
     const rec = ensureRecognizer();
@@ -105,15 +153,16 @@ export default function App() {
     if (rec.getState() === 'listening') {
       rec.stop();
       setFeedback('idle');
+      setStep('idle');
       setMessage('已停止 — 按空格键重新开始');
     } else {
       setTranscript('');
       setInterim('');
+      setStep('asr');
       rec.start();
     }
   }, [micReady, ensureRecognizer]);
 
-  // 空格键触发
   useEffect(() => {
     if (!micReady) return;
     const onKey = (e: KeyboardEvent) => {
@@ -125,6 +174,10 @@ export default function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [micReady, toggleListening]);
+
+  const stepLabel: Record<PipelineStep, string> = {
+    idle: '待命', asr: '听写中', nlu: '理解中', parser: '解析中', engine: '渲染中', error: '异常',
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
@@ -146,7 +199,10 @@ export default function App() {
             : feedback === 'error' ? '#EF4444'
             : '#9CA3AF',
         }} />
-        <span>{message}</span>
+        <span style={{ flex: 1 }}>{message}</span>
+        <span style={{ fontSize: 12, color: '#9CA3AF', background: '#FFF', padding: '2px 8px', borderRadius: 4 }}>
+          {stepLabel[step]}
+        </span>
       </div>
 
       {/* 识别文本回显 */}
@@ -175,6 +231,21 @@ export default function App() {
         ref={canvasRef}
         style={{ flex: 1, width: '100%', border: '1px solid #E5E7EB' }}
       />
+
+      {/* 错误日志区 */}
+      {errors.length > 0 && (
+        <div style={{
+          padding: '6px 24px',
+          background: '#FEF2F2',
+          borderTop: '1px solid #FECACA',
+          fontSize: 12,
+          color: '#991B1B',
+          maxHeight: 80,
+          overflowY: 'auto',
+        }}>
+          {errors.map((e, i) => <div key={i}>{e}</div>)}
+        </div>
+      )}
 
       {/* 底部操作栏 */}
       <div style={{ padding: '12px 24px', textAlign: 'center' }}>
