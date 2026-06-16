@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { initEngine, execute } from '@/engine';
 import type { EngineContext } from '@/engine';
-import { createSpeechRecognizer } from '@/voice';
+import { createIflytekRecognizer } from '@/voice';
 import type { ASRResult } from '@/voice';
 import { parse, isLowConfidence } from '@/nlu';
 import { parseToCommand } from '@/parser';
@@ -93,11 +93,11 @@ export default function App() {
   }, [step, addError]);
 
   // 语音识别器
-  const recognizerRef = useRef<ReturnType<typeof createSpeechRecognizer> | null>(null);
+  const recognizerRef = useRef<ReturnType<typeof createIflytekRecognizer> | null>(null);
 
   const ensureRecognizer = useCallback(() => {
     if (!recognizerRef.current) {
-      recognizerRef.current = createSpeechRecognizer({
+      recognizerRef.current = createIflytekRecognizer({
         onResult: (r) => { handleResult(r); },
         onInterim: (t) => { setInterim(t); setStep('asr'); },
         onStateChange: (s) => {
@@ -123,7 +123,7 @@ export default function App() {
           } else if (e === 'recognition-service-unavailable') {
             setMessage('Edge 语音云服务不可用 — 请检查 Windows 设置 → 隐私和安全性 → 语音 → 开启「在线语音识别」，或换用 Chrome');
           } else if (e === 'no-result') {
-            setMessage('语音识别未返回结果。Edge 请确认 Windows 设置 → 隐私 → 在线语音识别已开启');
+            setMessage('语音识别未返回结果。请确认: 1) 讯飞 API 已配置 2) api/ 服务已启动 3) 麦克风工作正常');
           } else {
             setMessage(`语音识别错误: ${e}`);
           }
@@ -270,7 +270,7 @@ export default function App() {
           </button>
         ) : (
           <span style={{ fontSize: 13, color: '#9CA3AF' }}>
-            按空格键开始说话 | 试试: "画一个红色的圆" "把它改成蓝色" "撤销" "导出为PNG"
+            讯飞语音识别 | 按空格键开始说话 | 试试: "画一个红色的圆" "把它改成蓝色" "撤销" "导出为PNG"
           </span>
         )}
       </div>

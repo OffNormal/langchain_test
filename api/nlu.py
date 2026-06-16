@@ -14,6 +14,10 @@ from langchain_deepseek import ChatDeepSeek
 app = FastAPI(title="Voice Drawing NLU")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+# 引入讯飞 ASR 鉴权路由
+from api.iflytek_auth import router as iflytek_router
+app.include_router(iflytek_router)
+
 
 # ── Schema ──
 class NLURequest(BaseModel):
