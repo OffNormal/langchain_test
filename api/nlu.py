@@ -1,8 +1,11 @@
 """
 FastAPI NLU 服务 — LangChain + DeepSeek
 启动: .venv/bin/python -m uvicorn api.nlu:app --port 8000
-需要: export DEEPSEEK_API_KEY=sk-xxx
+环境变量从项目根目录 .env 文件自动加载
 """
+
+from dotenv import load_dotenv
+load_dotenv()  # 自动加载项目根目录 .env
 
 from pydantic import BaseModel
 from fastapi import FastAPI
