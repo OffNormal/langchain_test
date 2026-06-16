@@ -197,9 +197,14 @@ const rules: RuleFn[] = [
   fileOperations,
 ];
 
+/** 移除 ASR 结果中常见的句尾标点，避免干扰规则匹配 */
+function cleanTranscript(t: string): string {
+  return t.trim().replace(/[。！？.!?，,、；;：:…\s]+$/g, '');
+}
+
 /** 尝试所有规则，返回第一个匹配结果 */
 export function matchRules(transcript: string): RuleMatch | null {
-  const trimmed = transcript.trim();
+  const trimmed = cleanTranscript(transcript);
   for (const rule of rules) {
     const match = rule(trimmed);
     if (match) return match;
