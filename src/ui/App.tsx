@@ -120,6 +120,8 @@ export default function App() {
             setMessage('找不到麦克风设备');
           } else if (e === 'network') {
             setMessage('语音识别需要联网');
+          } else if (e === 'no-result') {
+            setMessage('语音识别未返回结果。Edge 请确认 Windows 设置 → 隐私 → 在线语音识别已开启');
           } else {
             setMessage(`语音识别错误: ${e}`);
           }

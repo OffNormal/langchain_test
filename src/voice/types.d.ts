@@ -38,6 +38,12 @@ interface SpeechRecognition extends EventTarget {
   onresult: ((event: SpeechRecognitionEvent) => void) | null;
   onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
   onend: (() => void) | null;
+  onspeechstart: (() => void) | null;
+  onspeechend: (() => void) | null;
+  onaudiostart: (() => void) | null;
+  onaudioend: (() => void) | null;
+  onsoundstart: (() => void) | null;
+  onsoundend: (() => void) | null;
 }
 
 declare var SpeechRecognition: {
