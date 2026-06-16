@@ -117,6 +117,19 @@ export function createShape(cmd: DrawCommand): ShapeFactoryResult | null {
   if (obj) {
     // 附加自定义属性用于序列化
     (obj as unknown as Record<string, unknown>).voiceDrawId = id;
+
+    // 覆盖 toObject 确保 voiceDrawId 在 canvas.toJSON() 中保留，
+    // 否则 undo/redo (loadFromJSON) 会丢失该属性，导致后续 modify 找不到目标
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const originalToObject = obj.toObject.bind(obj) as (props?: any[]) => Record<string, any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    obj.toObject = function (this: fabric.FabricObject, ...args: any[]) {
+      return {
+        ...originalToObject(...args),
+        voiceDrawId: (this as unknown as Record<string, unknown>).voiceDrawId,
+      };
+    };
+
     return { object: obj, id };
   }
 

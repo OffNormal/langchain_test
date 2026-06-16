@@ -64,12 +64,14 @@ export function execute(ctx: EngineContext, cmd: DrawCommand): string | null {
     }
 
     case 'modify': {
-      applyModify(ctx.canvas, cmd, ctx.lastCreatedId, ctx.selectedIds);
+      const ok = applyModify(ctx.canvas, cmd, ctx.lastCreatedId, ctx.selectedIds);
+      if (!ok) throw new Error(`找不到要修改的对象 (target: ${cmd.target})`);
       break;
     }
 
     case 'delete': {
-      applyDelete(ctx.canvas, cmd, ctx.lastCreatedId, ctx.selectedIds);
+      const ok = applyDelete(ctx.canvas, cmd, ctx.lastCreatedId, ctx.selectedIds);
+      if (!ok) throw new Error(`找不到要删除的对象 (target: ${cmd.target})`);
       break;
     }
 
