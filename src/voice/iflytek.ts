@@ -48,22 +48,35 @@ function pcmToBase64(pcm: Int16Array): string {
   return btoa(binary);
 }
 
+interface IatWordSegment {
+  bg: number;
+  ed: number;
+  cw: Array<{ w: string; wp: string; sc: number }>;
+}
+
+/** 从 ws 数组提取识别的文本 (pgs 模式下无重叠，直接拼接) */
+function wsToText(ws: IatWordSegment[]): string {
+  if (!ws || ws.length === 0) return '';
+  return ws
+    .filter((seg) => seg.cw.length > 0)
+    .map((seg) => seg.cw[0].w)
+    .join('');
+}
+
 export function createIflytekRecognizer(handler: ASREventHandler) {
   let state: ASRState = 'idle';
   let ws: WebSocket | null = null;
   let audioCtx: AudioContext | null = null;
   let stream: MediaStream | null = null;
   let processor: ScriptProcessorNode | null = null;
-  let gainNode: GainNode | null = null; // 静音节点，避免 ScriptProcessor 播放到扬声器
+  let gainNode: GainNode | null = null;
   let appId = '';
 
   // 识别结果
   let finalTranscript = '';
   let interimTranscript = '';
-  /** 讯飞按句子 sn 索引返回，用缓冲拼接多句 */
-  const sentenceBuffer: string[] = [];
   let gotFirstResult = false;
-  let resultSent = false; // 防止 onclose 和 onmessage 重复发送 onResult
+  let resultSent = false;
 
   const setState = (s: ASRState) => {
     state = s;
@@ -80,7 +93,11 @@ export function createIflytekRecognizer(handler: ASREventHandler) {
     return resp.json();
   }
 
-  /** 解析讯飞返回的 JSON 结果 */
+  /**
+   * 解析讯飞返回的 JSON 结果。
+   * pgs 模式下每个响应携带当前完整识别文本，直接提取使用，
+   * 不做跨响应的句子缓冲（避免 wpgs 模式下 sn 乱序导致的文本污染）。
+   */
   function handleMessage(json: IflytekResponse): void {
     if (json.code !== 0) {
       console.warn('[iflytek:error]', json.code, json.message);
@@ -90,42 +107,20 @@ export function createIflytekRecognizer(handler: ASREventHandler) {
     const result = json.data?.result;
     if (!result?.ws) return;
 
-    // wpgs 模式下 ws 条目可能有重叠（如 "帮" + "帮我" + "我"），
-    // 按 bg 排序后，只保留非重叠的最短片段（取每个位置最精细的词）
-    const segments = result.ws
-      .filter((seg) => seg.cw.length > 0)
-      .sort((a, b) => a.bg - b.bg);
+    const text = wsToText(result.ws);
+    if (!text) return;
 
-    const deduped: typeof segments = [];
-    for (const seg of segments) {
-      const last = deduped[deduped.length - 1];
-      if (last && seg.bg < last.ed) {
-        // 与前一词重叠：保留 span 更短的（更精细的词）
-        if (seg.ed - seg.bg < last.ed - last.bg) {
-          deduped[deduped.length - 1] = seg;
-        }
-        // 否则丢弃当前词（保留已有的更短/相同的词）
-      } else {
-        deduped.push(seg);
-      }
-    }
-
-    const words = deduped.map((seg) => seg.cw[0].w);
-    const sentence = words.join('');
-    sentenceBuffer[result.sn] = sentence;
-    const fullText = sentenceBuffer.filter(Boolean).join('');
-    interimTranscript = fullText;
+    interimTranscript = text;
+    gotFirstResult = true;
 
     if (result.ls) {
-      // 最后一句 → 最终结果
-      finalTranscript = fullText;
-      gotFirstResult = true;
+      // 最终结果
+      finalTranscript = text;
       console.log('[iflytek:final]', finalTranscript);
-      // 不立即触发 onResult，等 ws.onclose 统一处理（server 端的 ls=true 通常伴随 close）
     } else {
-      gotFirstResult = true;
-      handler.onInterim?.(fullText);
-      console.log('[iflytek:interim]', fullText);
+      // 流式中间结果 → UI 实时回显
+      handler.onInterim?.(text);
+      console.log('[iflytek:interim]', text);
     }
   }
 
@@ -139,7 +134,7 @@ export function createIflytekRecognizer(handler: ASREventHandler) {
         domain: 'iat',
         accent: 'mandarin',
         vad_eos: 5000,
-        dwa: 'wpgs',
+        dwa: 'pgs',
       },
       data: {
         status,
@@ -208,7 +203,6 @@ export function createIflytekRecognizer(handler: ASREventHandler) {
     resultSent = false;
     finalTranscript = '';
     interimTranscript = '';
-    sentenceBuffer.length = 0;
     appId = '';
 
     setState('listening');
@@ -244,7 +238,6 @@ export function createIflytekRecognizer(handler: ASREventHandler) {
 
         // 讯飞服务端 VAD 判定说话结束，返回 ls=true
         if (json.code === 0 && json.data?.result?.ls) {
-          // 服务器认为 utterance 结束，给一点时间收尾
           deliverResult();
         }
       } catch {
@@ -271,16 +264,14 @@ export function createIflytekRecognizer(handler: ASREventHandler) {
 
     const trackSettings = stream.getAudioTracks()[0]?.getSettings();
     const deviceRate = trackSettings?.sampleRate || 48000;
-    // 尽量匹配 16kHz
     audioCtx = new AudioContext({ sampleRate: deviceRate });
     console.log('[iflytek:audio]', { deviceRate, contextRate: audioCtx.sampleRate });
 
     const source = audioCtx.createMediaStreamSource(stream);
 
-    // ScriptProcessorNode: 1024 samples @ 16kHz = 64ms 延迟，实时性足够
     processor = audioCtx.createScriptProcessor(1024, 1, 1);
 
-    // 零音量 GainNode，避免 ScriptProcessor 音频输出到扬声器
+    // 零音量 GainNode，避免处理器音频输出到扬声器
     gainNode = audioCtx.createGain();
     gainNode.gain.value = 0;
 
@@ -299,10 +290,8 @@ export function createIflytekRecognizer(handler: ASREventHandler) {
       let pcm: Int16Array;
 
       if (resampleRatio <= 1.001 && resampleRatio >= 0.999) {
-        // 原生 16kHz，直接转换
         pcm = float32ToInt16(input);
       } else {
-        // 降采样 Float32 @deviceRate → Int16 @16kHz
         const targetLen = Math.floor(input.length / resampleRatio);
         pcm = new Int16Array(targetLen);
         for (let i = 0; i < targetLen; i++) {
@@ -321,7 +310,7 @@ export function createIflytekRecognizer(handler: ASREventHandler) {
     if (state !== 'listening') return;
     // 发送结束帧
     sendFrame(2);
-    // 给服务器 400ms 返回最终结果
+    // 给服务器短暂时间返回最终结果
     setTimeout(() => {
       if (!resultSent) {
         deliverResult();
