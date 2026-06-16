@@ -1,6 +1,12 @@
 /**
  * 浏览器 SpeechRecognition API 封装
  * MVP 使用浏览器内置语音识别，V1.0+ 可替换为讯飞流式 ASR
+ *
+ * 已知浏览器差异：
+ * - Chrome：使用 Google 云语音服务，onresult 可靠触发
+ * - Edge：使用 Microsoft 云语音服务，speechstart/speechend 能触发，
+ *   但云服务不可用时 onresult 永不触发，Edge 自发 abort 且无明确错误码
+ *   解决：检测"检测到语音但无结果即 abort"模式，提示用户检查 Windows 在线语音识别设置
  */
 
 export interface ASRResult {
@@ -36,11 +42,15 @@ export function createSpeechRecognizer(handler: ASREventHandler) {
   recognition.maxAlternatives = 3;
 
   let state: ASRState = 'idle';
-  /** 递增版本号，供异步事件回调判断自己是否来自已废弃的 session */
+  /** 递增 session id，标记当前活跃的识别会话 */
   let sessionId = 0;
+  /** 最近一次主动调用 abort() 的时间戳，用于区分"我们的清理 abort"和"Edge 自发 abort" */
+  let intentionalAbortAt = 0;
   let autoStopTimer: ReturnType<typeof setTimeout> | null = null;
-  /** 本轮是否收到过任何结果（含 interim） */
+  /** 本轮是否收到过至少一个 onresult（含 interim） */
   let gotAnyResult = false;
+  /** 本轮是否触发过 onspeechstart（用户确实说话了） */
+  let gotSpeechStart = false;
 
   const clearTimer = () => {
     if (autoStopTimer) { clearTimeout(autoStopTimer); autoStopTimer = null; }
@@ -51,6 +61,12 @@ export function createSpeechRecognizer(handler: ASREventHandler) {
     if (s !== 'listening') clearTimer();
     handler.onStateChange?.(s);
   };
+
+  /**
+   * 判断 onerror('aborted') 是否来自我们自己的清理 abort()
+   * 如果在 200ms 内我们主动调过 abort()，这就是预期的清理事件，不需要报错
+   */
+  const isIntentionalAbort = () => Date.now() - intentionalAbortAt < 200;
 
   recognition.onresult = (event: SpeechRecognitionEvent) => {
     const result = event.results[event.results.length - 1];
@@ -69,31 +85,54 @@ export function createSpeechRecognizer(handler: ASREventHandler) {
   };
 
   recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-    console.log('[voice:error]', { error: event.error, message: event.message, sessionId });
-    // "no-speech" 和 "aborted" 是正常情况，不当作错误
-    if (event.error === 'no-speech' || event.error === 'aborted') {
+    console.log('[voice:error]', { error: event.error, message: event.message, sessionId, gotSpeechStart, gotAnyResult });
+
+    if (event.error === 'no-speech') {
+      // 用户没说话或环境太安静，正常情况
       setState('idle');
-    } else {
-      setState('error');
-      handler.onError?.(event.error);
+      return;
     }
+
+    if (event.error === 'aborted') {
+      if (isIntentionalAbort()) {
+        // 我们在 start()/stop() 中主动 abort，正常清理，忽略
+        setState('idle');
+        return;
+      }
+      // Edge 自发 abort：浏览器检测到语音但云服务无法返回结果
+      // 这不是用户的问题，是浏览器/系统语音服务配置问题
+      setState('error');
+      if (gotSpeechStart && !gotAnyResult) {
+        // 明确模式：检测到语音 → 无结果 → abort，Edge 云服务不可用
+        handler.onError?.('recognition-service-unavailable');
+      } else if (!gotAnyResult) {
+        handler.onError?.('no-result');
+      }
+      return;
+    }
+
+    // 其他错误：network / not-allowed / audio-capture / service-not-allowed
+    setState('error');
+    handler.onError?.(event.error);
   };
 
   recognition.onend = () => {
-    console.log('[voice:end]', { state, gotAnyResult, sessionId });
-    const wasListening = state === 'listening';
-    if (wasListening) {
+    console.log('[voice:end]', { state, gotAnyResult, gotSpeechStart, sessionId });
+    if (state === 'listening') {
+      // 自然结束（continuous=false 时用户停止说话，正常完成）
       setState('idle');
-      // Edge 可能静默失败：start 成功但没触发任何 onresult
-      // 识别自然结束时若没有任何结果，通知用户
       if (!gotAnyResult) {
         handler.onError?.('no-result');
       }
     }
+    // state 已是 idle/error：由 onerror 或 stop() 先处理了，不再重复通知
   };
 
-  // 调试事件：帮助排查 Edge 下语音采集是否正常工作
-  recognition.onspeechstart = () => console.log('[voice:speechstart]', { sessionId });
+  // 调试事件：帮助排查不同浏览器下语音采集的行为差异
+  recognition.onspeechstart = () => {
+    gotSpeechStart = true;
+    console.log('[voice:speechstart]', { sessionId });
+  };
   recognition.onspeechend = () => console.log('[voice:speechend]', { sessionId });
   recognition.onaudiostart = () => console.log('[voice:audiostart]', { sessionId });
   recognition.onaudioend = () => console.log('[voice:audioend]', { sessionId });
@@ -103,19 +142,22 @@ export function createSpeechRecognizer(handler: ASREventHandler) {
   return {
     start() {
       clearTimer();
-      // 递增 session，让旧的异步事件可以识别自己是 stale 的
       const curSession = ++sessionId;
       gotAnyResult = false;
-      // 强制 abort 重置浏览器内部状态
+      gotSpeechStart = false;
+
+      // 强制 abort 重置浏览器内部状态（修复 InvalidStateError）
+      intentionalAbortAt = Date.now();
       try { recognition.abort(); } catch { /* ignore */ }
+
       setState('listening');
       try {
         recognition.start();
       } catch {
-        // 如果仍然失败，说明浏览器还没准备好，延迟重试
+        // 浏览器还没准备好，延迟重试一次
         setTimeout(() => {
-          // 只在新 session 仍是当前 session 时重试
           if (sessionId !== curSession) return;
+          intentionalAbortAt = Date.now();
           try { recognition.abort(); } catch { /* ignore */ }
           try {
             setState('listening');
@@ -127,21 +169,25 @@ export function createSpeechRecognizer(handler: ASREventHandler) {
         }, 150);
         return;
       }
-      // 5 秒兜底超时
+
+      // 安全网：如果浏览器既不触发 onresult 也不触发 onerror，
+      // 5 秒后自动停止，避免永远卡在 listening 状态
       autoStopTimer = setTimeout(() => {
-        if (state === 'listening') {
-          console.log('[voice:timeout] 5s 超时，自动停止', { sessionId: curSession });
-          try { recognition.abort(); } catch { /* ignore */ }
-          setState('idle');
-          if (!gotAnyResult) {
-            handler.onError?.('no-result');
-          }
+        // 只清理当前 session，忽略已过期的 timer
+        if (sessionId !== curSession || state !== 'listening') return;
+        console.log('[voice:timeout] 5s 兜底超时', { sessionId: curSession });
+        intentionalAbortAt = Date.now();
+        try { recognition.abort(); } catch { /* ignore */ }
+        setState('idle');
+        if (!gotAnyResult) {
+          handler.onError?.('no-result');
         }
       }, 5000);
     },
 
     stop() {
       clearTimer();
+      intentionalAbortAt = Date.now();
       try { recognition.abort(); } catch { /* ignore */ }
       setState('idle');
     },

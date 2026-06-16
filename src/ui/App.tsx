@@ -120,6 +120,8 @@ export default function App() {
             setMessage('找不到麦克风设备');
           } else if (e === 'network') {
             setMessage('语音识别需要联网');
+          } else if (e === 'recognition-service-unavailable') {
+            setMessage('Edge 语音云服务不可用 — 请检查 Windows 设置 → 隐私和安全性 → 语音 → 开启「在线语音识别」，或换用 Chrome');
           } else if (e === 'no-result') {
             setMessage('语音识别未返回结果。Edge 请确认 Windows 设置 → 隐私 → 在线语音识别已开启');
           } else {
