@@ -12,14 +12,14 @@
 | 画布 | Fabric.js 6.x | — |
 | LLM 调用 | LangChain (Prompt + OutputParser) | — |
 | 流程编排 | — | LangGraph (StateGraph + Router) |
-| ASR | 浏览器 Speech API | 讯飞流式 |
+| ASR | 讯飞流式 (WebSocket IAT) | — |
 | NLU LLM | DeepSeek-V4 (`langchain_deepseek`) | 通义千问 / 智谱 GLM 备选 |
 | 部署 | Vercel (Web) | Tauri (Desktop) |
 
 ## 架构
 
 ```
-语音输入 → ASR → 规则引擎(匹配?→直接返回) → LangChain LLM → Command Parser → Fabric.js Canvas
+语音输入 → 讯飞 IAT WebSocket → 规则引擎(匹配?→直接返回) → LangChain LLM → Command Parser → Fabric.js Canvas
 ```
 
 MVP 阶段 LangChain 直链，不做复杂状态机。V1.0+ 引入 LangGraph 管理意图路由和复合指令。
@@ -53,9 +53,9 @@ src/
 | **输入** | 用户语音（浏览器麦克风） |
 | **输出** | `{ transcript: string; confidence: number }` |
 | **对外接口** | `startListening(): void` / `stopListening(): string` |
-| **依赖** | 浏览器 Speech API（无内部模块依赖） |
+| **依赖** | 讯飞 IAT WebSocket API + api/iflytek_auth.py 鉴权（无内部模块依赖） |
 | **可独立测试** | 对着麦克风说话，console 打印转写文本 |
-| **文件** | `voice/speech.ts`（MVP 浏览器版）、`voice/vad.ts` |
+| **文件** | `voice/iflytek.ts`（讯飞 WebSocket 版）、`voice/speech.ts`（浏览器版，备用）、`voice/vad.ts` |
 
 ### 模块2: nlu/ — 自然语言理解
 
