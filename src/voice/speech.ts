@@ -36,9 +36,14 @@ export function createSpeechRecognizer(handler: ASREventHandler) {
   recognition.maxAlternatives = 3;
 
   let state: ASRState = 'idle';
+  let autoStopTimer: ReturnType<typeof setTimeout> | null = null;
 
   const setState = (s: ASRState) => {
     state = s;
+    if (s !== 'listening' && autoStopTimer) {
+      clearTimeout(autoStopTimer);
+      autoStopTimer = null;
+    }
     handler.onStateChange?.(s);
   };
 
@@ -71,8 +76,16 @@ export function createSpeechRecognizer(handler: ASREventHandler) {
       if (state === 'listening') return;
       setState('listening');
       recognition.start();
+      // 5 秒兜底超时：防止浏览器不触发 onend
+      autoStopTimer = setTimeout(() => {
+        if (state === 'listening') {
+          recognition.stop();
+          setState('idle');
+        }
+      }, 5000);
     },
     stop() {
+      if (autoStopTimer) { clearTimeout(autoStopTimer); autoStopTimer = null; }
       recognition.stop();
       setState('idle');
     },
