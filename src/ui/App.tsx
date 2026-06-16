@@ -14,7 +14,8 @@ export default function App() {
   const [transcript, setTranscript] = useState('');
   const [interim, setInterim] = useState('');
   const [feedback, setFeedback] = useState<FeedbackState>('idle');
-  const [message, setMessage] = useState('按空格键开始说话');
+  const [message, setMessage] = useState('点击下方按钮授权麦克风');
+  const [micReady, setMicReady] = useState(false);
 
   // 初始化 Engine
   useEffect(() => {
@@ -30,7 +31,6 @@ export default function App() {
     setMessage(`听到了: "${asr.transcript}"`);
 
     try {
-      // NLU 解析
       const nlu = await parse(asr.transcript);
       if (isLowConfidence(nlu)) {
         setMessage('没理解，请换种说法');
@@ -38,10 +38,8 @@ export default function App() {
         return;
       }
 
-      // Command Parser
       const cmd = parseToCommand(nlu);
 
-      // Drawing Engine
       if (ctxRef.current) {
         execute(ctxRef.current, cmd);
         setMessage(`完成: ${cmd.action} → ${cmd.target}`);
@@ -53,35 +51,62 @@ export default function App() {
     }
   }, []);
 
-  // 语音识别器
-  const recognizerRef = useRef(
-    createSpeechRecognizer({
-      onResult: (r) => { handleResult(r); },
-      onInterim: (t) => { setInterim(t); },
-      onStateChange: (s) => {
-        if (s === 'listening') {
-          setFeedback('listening');
-          setMessage('正在听...');
-        }
-      },
-      onError: (e) => {
-        setMessage(`语音识别错误: ${e}`);
-        setFeedback('error');
-      },
-    }),
-  );
+  // 语音识别器（懒创建：权限就绪后才初始化）
+  const recognizerRef = useRef<ReturnType<typeof createSpeechRecognizer> | null>(null);
 
-  // 键盘：空格键开始语音识别
+  const ensureRecognizer = useCallback(() => {
+    if (!recognizerRef.current) {
+      recognizerRef.current = createSpeechRecognizer({
+        onResult: (r) => { handleResult(r); },
+        onInterim: (t) => { setInterim(t); },
+        onStateChange: (s) => {
+          if (s === 'listening') {
+            setFeedback('listening');
+            setMessage('正在听...');
+          }
+        },
+        onError: (e) => {
+          setMessage(`语音识别错误: ${e}`);
+          setFeedback('error');
+        },
+      });
+    }
+    return recognizerRef.current;
+  }, [handleResult]);
+
+  // 请求麦克风权限（必须由用户点击触发）
+  const requestMic = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // 权限已获取，立即释放流（SpeechRecognition 自己会用麦克风）
+      stream.getTracks().forEach((t) => t.stop());
+      setMicReady(true);
+      setMessage('麦克风就绪 — 按空格键开始说话');
+    } catch {
+      setMessage('麦克风权限被拒绝，请在浏览器设置中允许');
+      setFeedback('error');
+    }
+  }, []);
+
+  // 开始语音识别
+  const startListening = useCallback(() => {
+    if (!micReady) return;
+    const rec = ensureRecognizer();
+    rec.start();
+  }, [micReady, ensureRecognizer]);
+
+  // 空格键触发（仅在权限就绪后生效）
   useEffect(() => {
+    if (!micReady) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !e.repeat && ctxRef.current) {
+      if (e.code === 'Space' && !e.repeat) {
         e.preventDefault();
-        recognizerRef.current.start();
+        startListening();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [micReady, startListening]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
@@ -113,9 +138,28 @@ export default function App() {
         style={{ flex: 1, width: '100%', border: '1px solid #E5E7EB' }}
       />
 
-      {/* 底部提示 */}
-      <div style={{ padding: '8px 24px', fontSize: 13, color: '#9CA3AF', textAlign: 'center' }}>
-        按空格键开始说话 | 试试: "画一个红色的圆" "把它改成蓝色" "撤销" "导出"
+      {/* 底部操作栏 */}
+      <div style={{ padding: '12px 24px', textAlign: 'center' }}>
+        {!micReady ? (
+          <button
+            onClick={requestMic}
+            style={{
+              padding: '12px 32px',
+              fontSize: 16,
+              background: '#3B82F6',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 8,
+              cursor: 'pointer',
+            }}
+          >
+            授权麦克风
+          </button>
+        ) : (
+          <span style={{ fontSize: 13, color: '#9CA3AF' }}>
+            按空格键开始说话 | 试试: "画一个红色的圆" "把它改成蓝色" "撤销" "导出为PNG"
+          </span>
+        )}
       </div>
     </div>
   );
