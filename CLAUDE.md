@@ -2,7 +2,13 @@
 
 ## 项目定位
 
-纯语音控制的 Web 绘图工具。用户不触碰鼠标/键盘，仅通过自然语言完成绘图创作。MVP 阶段验证语音→绘图闭环可行性。
+纯语音控制的 Web 绘图工具。用户不触碰鼠标/键盘，仅通过自然语言完成绘图创作。
+
+- **MVP (已完成)**: 验证语音→绘图闭环。5 种几何图形 + 颜色操作 + 撤销重做 + 导出。
+- **V1.0 (当前)**: 扩展核心体验。LangGraph 流程编排 + 自由绘制 + 图层 + 文字标注 + 图形编辑。
+- **V1.1+ (规划)**: 模板、协作、智能建议。
+
+当前分支: `feature/v1.0-langgraph`，从 LangGraph 流程编排开始。
 
 ## 技术栈
 
@@ -13,7 +19,7 @@
 | LLM 调用 | LangChain (Prompt + OutputParser) | — |
 | 流程编排 | LangGraph (StateGraph + Router) | 复合指令编排 (LangGraph 子图) |
 | ASR | 讯飞流式 (WebSocket IAT) | — |
-| NLU LLM | DeepSeek-V4 (`langchain_deepseek`) | 通义千问 / 智谱 GLM 备选 |
+| NLU LLM | DeepSeek (`deepseek-chat`) | 通义千问 / 智谱 GLM 备选 |
 | 部署 | Vercel (Web) | Tauri (Desktop) |
 
 ## 架构
@@ -62,13 +68,13 @@ src/
 
 | 项 | 说明 |
 |----|------|
-| **职责** | 将 ASR 文本解析为结构化 NLUResult。内部含规则引擎(优先) + LangChain LLM(兜底) |
+| **职责** | 将 ASR 文本解析为结构化 NLUResult。内部含规则引擎(优先) + LangGraph StateGraph(兜底) |
 | **输入** | `transcript: string`（来自 voice 模块） |
 | **输出** | `NLUResult`（见 specs/API.md §3.3） |
 | **对外接口** | `parse(transcript: string): Promise<NLUResult>` |
-| **依赖** | voice 模块、LangChain + DeepSeek API |
+| **依赖** | voice 模块、LangGraph StateGraph + DeepSeek API |
 | **可独立测试** | 直接传入文本字符串（不连语音），验证 NLUResult 正确性 |
-| **文件** | `nlu/rules.ts`（规则引擎）、`nlu/llm.ts`（LangChain Chain）、`nlu/index.ts`（聚合导出） |
+| **文件** | `nlu/rules.ts`（规则引擎）、`nlu/llm.ts`（LangGraph API 客户端）、`nlu/index.ts`（聚合导出） |
 
 ### 模块3: parser/ — 指令解析器
 
@@ -130,20 +136,45 @@ voice ──→ nlu ──→ parser ──→ engine ──→ ui
 - **模块间通过明确的 TypeScript 接口通信**，不跨模块直接引用内部实现
 - **state 模块只被 engine（写）和 ui（读）依赖**，voice/nlu/parser 为无状态纯函数
 
+## V1.0 开发路线图
+
+| 阶段 | 内容 | 参考文档 | 状态 |
+|------|------|---------|------|
+| Phase 1 | **LangGraph 流程编排** — StateGraph 替换 LCEL 直链，意图路由 + 专属 handler | `specs/PLAN_LANGGRAPH.md` | 🔨 待实施 |
+| Phase 2 | **自由绘制** — 方向 + 距离控制语音指令、填充/油漆桶 | `specs/PRD_01.md` §P1 | 📋 排队 |
+| Phase 3 | **图层管理** — 图层 CRUD、图层间对象移动 | `specs/PRD_01.md` §P1 | 📋 排队 |
+| Phase 4 | **文字标注** — 语音添加/编辑文字 | `specs/PRD_01.md` §P1 | 📋 排队 |
+| Phase 5 | **图形编辑增强** — 旋转/对齐/复制/移动，网格吸附 | `specs/PRD_01.md` §P1 | 📋 排队 |
+
+### Phase 1 详情: LangGraph 迁移
+
+```
+当前: 规则引擎 → LCEL chain (1 个巨大 prompt, 1 次 LLM 调用)
+目标: 规则引擎 → LangGraph StateGraph (7 节点, 2 次 LLM 调用: 分类→路由→handler)
+```
+
+- 2 个文件改动: `api/nlu.py` (重写) + `api/requirements.txt` (+langgraph)
+- 前端零改动（API 契约不变）
+- 完整设计见 `specs/PLAN_LANGGRAPH.md`
+
 ## 启动与运行
 
 ```bash
 # 首次安装
 npm install
-cp .env.example .env.local   # 填入 DeepSeek API Key
+pip install -r api/requirements.txt   # Python 后端依赖
+cp .env.example .env.local            # 填入 API 密钥
 
-# 开发
-npm run dev                   # 启动前端 (默认 localhost:5173)
+# 启动后端 (一个终端即可，nlu.py 已 include 讯飞鉴权路由)
+python -m uvicorn api.nlu:app --port 8000           # LangGraph NLU + 讯飞鉴权
+
+# 启动前端 (Vite 代理 /api → localhost:8000)
+npm run dev                            # localhost:5173
 
 # 检查
-npm run build                 # 生产构建
-npm run lint                  # ESLint
-npm run test                  # Vitest 单元测试
+npm run build                          # 生产构建
+npm run lint                           # ESLint
+npm run test                           # Vitest 单元测试
 ```
 
 ## LangGraph 调用模式
@@ -195,8 +226,12 @@ async def nlu(req: NLURequest) -> NLUResult:
 
 ```bash
 # .env.example
-DEEPSEEK_API_KEY=sk-xxx           # DeepSeek API 密钥（MVP 必填）
+DEEPSEEK_API_KEY=sk-xxx           # DeepSeek API 密钥（必填）
 DEEPSEEK_BASE_URL=https://api.deepseek.com
+IFLYTEK_APP_ID=xxx                # 讯飞控制台应用 ID（必填）
+IFLYTEK_API_KEY=xxx               # 讯飞 API Key（必填）
+IFLYTEK_API_SECRET=xxx            # 讯飞 API Secret（必填）
+IFLYTEK_IAT_HOST=iat-api.xfyun.cn # 讯飞 IAT 服务地址（可选，默认值）
 ```
 
 ## 核心数据结构
@@ -227,35 +262,41 @@ interface DrawingState {
 }
 ```
 
-## 性能目标 (MVP)
+## 性能目标
 
 | 环节 | 目标 |
 |------|------|
 | 音频采集 + VAD | <200ms |
-| ASR (浏览器 Speech API) | <800ms |
-| NLU (LLM) | <1500ms |
+| ASR (讯飞 WebSocket) | <800ms |
+| NLU 规则命中 | <5ms |
+| NLU LangGraph (2 次 LLM) | <3000ms |
 | Canvas 渲染 | <200ms |
-| **端到端 P50** | **<3s** |
+| **端到端 P50** | **<4s** (规则命中 <1s) |
 
 ## 容错机制
 
-- **ASR**：拼音白名单 + 领域词汇优先（"园"→"圆"，"宏色"→"红色"）
-- **NLU**：高置信直接执行，低置信提示重述
-- **LLM 故障**：LangChain Fallback → 规则引擎兜底
-- **用户侧**：说"撤销"即可回退任何操作
+- **ASR**：纯标点帧过滤、领域词汇优先（"园"→"圆"，"宏色"→"红色"）
+- **NLU**：规则引擎优先（<5ms 本地）→ LangGraph 兜底（节点异常返回 QUERY confidence=0）
+- **LLM 故障**：LangGraph 分类失败 → QUERY 兜底；handler 失败 → 空 slots 兜底
+- **用户侧**：说"撤销"即可回退任何操作。中/低置信度提示重述。
 
-## MVP 功能范围
+## 功能范围（分阶段，详见 `specs/PRD_01.md`）
 
-5 种几何图形（直线/圆/矩形/三角形/箭头）、颜色操作（20+ 预设 + Hex）、画布导航（缩放/平移）、撤销/重做、导出 PNG/SVG。
+| 优先级 | 范围 | 状态 |
+|--------|------|------|
+| **P0 (MVP)** | 5 种几何图形、20+ 颜色、画布导航、撤销/重做、导出 PNG/SVG | ✅ 已完成 |
+| **P1 (V1.0)** | 自由绘制、图层管理、文字标注、图形编辑（旋转/对齐/复制/移动）、网格吸附 | 🔨 当前 |
+| **P2 (V1.1+)** | 渐变填充、自定义笔刷、模板系统、协作模式、智能建议 | 📋 规划 |
 
 语音指令语法：`[动作] [目标对象] [参数]`（如 "画一个红色的圆" / "把它改成蓝色" / "撤销"）。
 
 ## 约束
 
 - 浏览器：Chrome/Edge 114+
-- MVP 需联网（LLM API 调用）
-- 所有 LLM 调用通过 LangChain 统一接口，方便模型切换
-- 参考数据（颜色映射、形状默认参数、术语）以 specs/SPEC.md 为唯一权威来源
+- 需联网（LLM API 调用 + 讯飞 ASR WebSocket）
+- LLM 调用通过 LangChain/LangGraph 统一接口，方便模型切换（DeepSeek 主 / 通义千问、智谱 GLM 备选）
+- 参考数据（颜色映射、形状默认参数、术语）以 `specs/SPEC.md` 为唯一权威来源
+- 产品需求以 `specs/PRD_01.md` 为准；架构决策参考 `specs/ARCHITECTURE.md`；V1.0 计划参考 `specs/PLAN_LANGGRAPH.md`
 
 ## Git 提交约束
 
@@ -339,8 +380,9 @@ scope 必须对应代码模块划分约定的模块之一：
 
 ### 分支策略
 
-- `main` — 可运行的最新版本，禁止直接推送
-- `feature/<模块名>-<功能>` — 功能分支，如 `feature/voice-asr`、`feature/nlu-rules`
+- `main` — MVP 可运行版本，禁止直接推送
+- `feature/v1.0-langgraph` — V1.0 开发分支（当前）
+- `feature/<模块名>-<功能>` — 功能分支，如 `feature/nlu-langgraph`、`feature/engine-layers`
 
 ### 提交前检查
 
@@ -382,7 +424,7 @@ scope 必须对应代码模块划分约定的模块之一：
 |------|------|
 | `package.json` | 前端依赖与脚本 |
 | `tsconfig.json` | TypeScript 配置 |
-| `.env.example` | 环境变量模板（DEEPSEEK_API_KEY） |
+| `.env.example` | 环境变量模板（DEEPSEEK_API_KEY + IFLYTEK_*） |
 | `.gitignore` | 排除 node_modules / dist / .env |
 
 ### 源码目录
